@@ -82,113 +82,86 @@ def generate_video(script_text, title, output_name):
     duration = float(r.stdout.strip() or 15)
     print(f"   Duration: {duration:.1f}s")
     
-    # Step 2: Generate background image (gradient + pattern)
-    print("   2/4 Creating background...")
+    # Step 2: Generate background image with text baked in
+    print("   2/4 Creating background with captions...")
     try:
         from PIL import Image, ImageDraw, ImageFont
+        
         img = Image.new('RGB', (VIDEO_WIDTH, VIDEO_HEIGHT), (18, 18, 32))
         draw = ImageDraw.Draw(img)
         
-        # Gradient-like pattern
-        for i in range(0, VIDEO_HEIGHT, 4):
-            color = (18 + i//30, 18 + i//40, 32 + i//20)
-            draw.line([(0, i), (VIDEO_WIDTH, i)], fill=color, width=4)
+        # Gradient background
+        for i in range(0, VIDEO_HEIGHT, 3):
+            color = (15 + i//35, 15 + i//45, 28 + i//25)
+            draw.line([(0, i), (VIDEO_WIDTH, i)], fill=color, width=3)
         
-        # Decorative circles
-        for _ in range(5):
-            x = random.randint(100, VIDEO_WIDTH-100)
-            y = random.randint(200, VIDEO_HEIGHT-200)
-            r = random.randint(80, 200)
-            draw.ellipse([x-r, y-r, x+r, y+r], outline=(60,60,100,30), width=2)
-        
-        img.save(bg_image, 'JPEG', quality=85)
-        print("   Background created with PIL")
-    except ImportError:
-        # Fallback: solid color with ffmpeg
-        run(f'ffmpeg -f lavfi -i color=c=0x121220:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:d=1 -frames:v 1 "{bg_image}" -y')
-    
-    # Step 3: Generate captions overlay
-    print("   3/4 Creating captions...")
-    try:
-        from PIL import Image, ImageDraw, ImageFont
-        
-        caption = Image.new('RGBA', (VIDEO_WIDTH, VIDEO_HEIGHT), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(caption)
-        
-        # Try to load a Chinese font
+        # Find Chinese font
         font_paths = [
             "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         ]
         font = None
-        font_size = 48
+        font_title = None
         for fp in font_paths:
             if os.path.exists(fp):
                 try:
-                    font = ImageFont.truetype(fp, font_size)
+                    font = ImageFont.truetype(fp, 44)
+                    font_title = ImageFont.truetype(fp, 60)
                     break
                 except:
                     continue
         if font is None:
             font = ImageFont.load_default()
+            font_title = font
         
-        # Wrap text and draw
-        wrapper = textwrap.TextWrapper(width=18)
-        lines = []
-        for line in wrapper.wrap(script_text):
-            lines.append(line)
-            if len(lines) >= 8:
-                break
+        # Draw title at top
+        bbox = draw.textbbox((0, 0), title, font=font_title)
+        tx = (VIDEO_WIDTH - bbox[2]) // 2
+        # Title background
+        draw.rectangle([0, 60, VIDEO_WIDTH, 140], fill=(245, 158, 11, 200))
+        draw.text((tx, 75), title, font=font_title, fill=(255, 255, 255))
         
-        y = (VIDEO_HEIGHT - len(lines) * 70) // 2
+        # Draw script text in center
+        wrapper = textwrap.TextWrapper(width=16)
+        lines = wrapper.wrap(script_text)[:7]
+        
+        line_height = 65
+        total_h = len(lines) * line_height
+        y = (VIDEO_HEIGHT - total_h) // 2 + 50
+        
         for line in lines:
             bbox = draw.textbbox((0, 0), line, font=font)
             x = (VIDEO_WIDTH - bbox[2]) // 2
-            
-            # Shadow
-            draw.text((x+2, y+2), line, font=font, fill=(0, 0, 0, 180))
-            # White text
-            draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
-            y += 70
+            # Shadow + highlight
+            draw.text((x+3, y+3), line, font=font, fill=(0, 0, 0, 200))
+            draw.text((x, y), line, font=font, fill=(255, 255, 255))
+            y += line_height
         
-        caption.save(caption_img)
-        print(f"   Captions: {len(lines)} lines")
+        # Footer text
+        footer = "AI Generated · PricePulse"
+        bbox = draw.textbbox((0, 0), footer, font=font)
+        fx = (VIDEO_WIDTH - bbox[2]) // 2
+        draw.text((fx, VIDEO_HEIGHT - 100), footer, font=font, fill=(150, 150, 170))
+        
+        img.save(bg_image, 'JPEG', quality=90)
+        print("   Background + captions rendered with PIL")
+        
     except Exception as e:
-        print(f"   ⚠ Caption error: {e}")
-        caption_img = None
+        print(f"   ⚠ PIL error: {e}, fallback to solid bg")
+        run(f'ffmpeg -f lavfi -i color=c=0x121220:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:d=1 -frames:v 1 "{bg_image}" -y')
     
-    # Step 4: FFmpeg composite
-    print(f"   4/4 Compiling video ({duration:.1f}s)...")
-    
-    if caption_img and caption_img.exists():
-        # Overlay captions on background
-        filter_complex = (
-            f"[0:v]loop=-1:size=9999,setpts=N/FRAME_RATE/TB[vbg];"
-            f"[1:v]loop=-1:size=9999,setpts=N/FRAME_RATE/TB[vcap];"
-            f"[vbg][vcap]overlay=0:0:shortest=1,"
-            f"drawtext=text='{title}':fontcolor=orange@0.8:fontsize=36:"
-            f"x=(w-text_w)/2:y=80:box=1:boxcolor=black@0.4:boxborderw=10[vout]"
-        )
-        cmd = (
-            f'ffmpeg -loop 1 -i "{bg_image}" -i "{caption_img}" -i "{audio_file}" '
-            f'-filter_complex "{filter_complex}" '
-            f'-map "[vout]" -map 2:a -c:v libx264 -preset fast -crf 23 '
-            f'-c:a aac -b:a 128k -t {duration} -pix_fmt yuv420p -shortest '
-            f'"{output_file}" -y'
-        )
-    else:
-        # Just image + audio
-        cmd = (
-            f'ffmpeg -loop 1 -i "{bg_image}" -i "{audio_file}" '
-            f'-vf "drawtext=text=\'{title}\':fontcolor=orange@0.8:fontsize=36:'
-            f'x=(w-text_w)/2:y=80:box=1:boxcolor=black@0.4:boxborderw=10,'
-            f'drawtext=textfile={text_file}:fontcolor=white:fontsize=32:'
-            f'x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.5:boxborderw=8" '
-            f'-c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k '
-            f'-t {duration} -pix_fmt yuv420p -shortest "{output_file}" -y'
-        )
+    # Step 3: Simple FFmpeg - image + audio
+    print(f"   3/3 Compiling video ({duration:.1f}s)...")
+    cmd = (
+        f'ffmpeg -loop 1 -i "{bg_image}" -i "{audio_file}" '
+        f'-c:v libx264 -preset ultrafast -crf 28 -tune stillimage '
+        f'-c:a aac -b:a 128k -t {duration} '
+        f'-pix_fmt yuv420p -shortest '
+        f'"{output_file}" -y'
+    )
     
     run(cmd)
     
