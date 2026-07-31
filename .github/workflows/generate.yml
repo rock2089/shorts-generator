@@ -1,0 +1,55 @@
+name: Generate Short Video
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # Every 6 hours
+  workflow_dispatch:          # Manual trigger
+  push:
+    branches: [main]
+    paths:
+      - 'generate.py'
+      - 'requirements.txt'
+      - '.github/workflows/generate.yml'
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Setup FFmpeg
+        uses: FedericoCarboni/setup-ffmpeg@v3
+      
+      - name: Install fonts (Chinese support)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq fonts-noto-cjk 2>/dev/null || echo "Fonts already installed"
+      
+      - name: Install deps
+        run: |
+          pip install -r requirements.txt
+      
+      - name: Generate Video
+        run: python generate.py
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: short-video
+          path: output/*.mp4
+          retention-days: 7
+      
+      - name: Summary
+        run: |
+          echo "## 🎬 Video Generated!" >> $GITHUB_STEP_SUMMARY
+          ls -lh output/*.mp4 2>/dev/null | while read line; do
+            echo "- $line" >> $GITHUB_STEP_SUMMARY
+          done
